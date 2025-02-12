@@ -1,0 +1,36 @@
+# Ignore build artifacts
+/bin/
+/obj/
+/Properties/launchSettings.json
+
+# Ignore Visual Studio files
+*.user
+*.suo
+*.vscode
+*.vs/
+*.csproj.user
+
+# Ignore compiled files
+*.dll
+*.exe
+*.pdb
+
+# Ignore NuGet packages
+packages/
+*.nupkg
+project.lock.json
+*.nuspec
+
+# Ignore JetBrains Rider project files
+.idea/
+
+# Ignore log files
+*.log
+
+# Ignore temporary files
+*.tmp
+*.cache
+
+# Ignore Unity/MonoDevelop files (if applicable)
+*.pidb
+*.sln.metaproj
