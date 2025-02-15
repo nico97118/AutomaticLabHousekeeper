@@ -15,6 +15,9 @@
 *.exe
 *.pdb
 
+# But do not ignore AutomaticLabHousekeeper.dll
+!AutomaticLabHousekeeper.dll
+
 # Ignore NuGet packages
 packages/
 *.nupkg
