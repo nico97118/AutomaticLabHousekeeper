@@ -16,12 +16,24 @@ namespace ALH
 
         void Awake()
         {
-            // Destroy if ALH not enabled
+            StartCoroutine(WaitForSettings());
+        }
+
+        private IEnumerator WaitForSettings()
+        {
+            while (HighLogic.CurrentGame == null || ALHSettings.Instance == null)
+            {
+                yield return null; // Wait until settings are available
+            }
+
+            Debug.Log("[AutomaticLabHousekeeper] Settings loaded, proceeding with initialization.");
+
+            // Destroy if ALH is disabled in settings
             if (!ALHSettings.Instance.enableALH)
             {
                 Debug.Log("[AutomaticLabHousekeeper] Disabled in settings.");
                 Destroy(this);
-                return;
+                yield break;
             }
 
             // Destroy if not in Flight, Tracking Station, or Space Center
@@ -30,13 +42,15 @@ namespace ALH
                 HighLogic.LoadedScene != GameScenes.SPACECENTER)
             {
                 Destroy(this);
-                return;
+                yield break;
             }
 
             Debug.Log($"[AutomaticLabHousekeeper] Initialized in {HighLogic.LoadedScene}");
 
             // Register settings update event
             GameEvents.OnGameSettingsApplied.Add(OnSettingsChanged);
+
+            StartCoroutine(DailyScienceCheck());
         }
 
         void OnDestroy()
@@ -59,11 +73,6 @@ namespace ALH
 
             // Restart science processing with new settings
             StopAllCoroutines();
-            StartCoroutine(DailyScienceCheck());
-        }
-
-        void Start()
-        {
             StartCoroutine(DailyScienceCheck());
         }
 
@@ -94,28 +103,61 @@ namespace ALH
         void ProcessScienceForAllVessels()
         {
             DebugLog("[AutomaticLabHousekeeper] Checking science for ALL vessels...");
-            foreach (Vessel v in FlightGlobals.Vessels)
+            foreach (Vessel v in FlightGlobals.Vessels.Where(v => HasScienceLab(v)))
             {
-                if (HasScienceLab(v))
-                {
-                    DebugLog("[AutomaticLabHousekeeper] ============================================================");
+                DebugLog("[AutomaticLabHousekeeper] ============================================================");
 
-                    if (v.loaded)
-                        TransferScienceFromLab(v);
-                    else
-                    {
-                        SimulateScienceProcessingForUnloadedLab(v);
-                        TransferScienceFromUnloadedLab(v);
-                    }
+                // Check if ALH is on this vessel
+                if (!HasALHModule(v))
+                {
+                    DebugLog($"[AutomaticLabHousekeeper] Skipping {v.vesselName}, no ALH module found.");
+                    continue;
                 }
+
+                // Retrieve transmissionAutomationEnabled from ALH module
+                bool transmissionEnabled = GetTransmissionAutomationStatus(v);
+                if (!transmissionEnabled)
+                {
+                    DebugLog($"[AutomaticLabHousekeeper] Skipping {v.vesselName}, transmission automation is disabled.");
+                    continue;
+                }
+
+                if (v.loaded)
+                    TransferScienceFromLab(v);
+                else
+                {
+                    SimulateScienceProcessingForUnloadedLab(v);
+                    TransferScienceFromUnloadedLab(v);
+                }
+                
             }
         }
 
         bool HasScienceLab(Vessel vessel)
         {
+            return vessel.loaded
+                ? vessel.Parts.Any(p => p.FindModuleImplementing<ModuleScienceLab>() != null)
+                : vessel.protoVessel.protoPartSnapshots.Any(protoPart =>
+                    protoPart.modules.Any(protoModule => protoModule.moduleName == "ModuleScienceLab"));
+        }
+
+        bool HasALHModule(Vessel vessel)
+        {
+            return vessel.loaded
+                ? vessel.Parts.Any(p => p.FindModuleImplementing<Module_AutomaticLabHousekeeper>() != null)
+                : vessel.protoVessel.protoPartSnapshots.Any(protoPart =>
+                    protoPart.modules.Any(protoModule => protoModule.moduleName == "Module_AutomaticLabHousekeeper"));
+        }
+
+        bool GetTransmissionAutomationStatus(Vessel vessel)
+        {
             if (vessel.loaded)
             {
-                return vessel.Parts.Any(p => p.Modules.Contains("ModuleScienceLab"));
+                var alhModule = vessel.Parts
+                    .Select(p => p.FindModuleImplementing<Module_AutomaticLabHousekeeper>())
+                    .FirstOrDefault(m => m != null);
+
+                return alhModule != null && alhModule.transmissionAutomationEnabled;
             }
             else
             {
@@ -123,14 +165,14 @@ namespace ALH
                 {
                     foreach (ProtoPartModuleSnapshot protoModule in protoPart.modules)
                     {
-                        if (protoModule.moduleName == "ModuleScienceLab")
+                        if (protoModule.moduleName == "Module_AutomaticLabHousekeeper")
                         {
-                            return true;
+                            return bool.Parse(protoModule.moduleValues.GetValue("transmissionAutomationEnabled"));
                         }
                     }
                 }
             }
-            return false;
+            return false; // Default to disabled if module is missing
         }
 
         void TransferScienceFromLab(Vessel vessel)

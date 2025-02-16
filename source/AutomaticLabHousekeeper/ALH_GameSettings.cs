@@ -28,7 +28,11 @@ namespace ALH
 
         public static ALHSettings Instance
         {
-            get { return HighLogic.CurrentGame.Parameters.CustomParams<ALHSettings>(); }
+            get
+            {
+                if (HighLogic.CurrentGame == null) return null; // Prevents crashes when game is loading
+                return HighLogic.CurrentGame.Parameters.CustomParams<ALHSettings>();
+            }
         }
     }
 }
