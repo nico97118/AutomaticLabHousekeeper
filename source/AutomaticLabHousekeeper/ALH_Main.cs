@@ -440,7 +440,7 @@ namespace ALH
                             availableDataSpace -= processedData;
                             storageContainer.DumpData(experiment); // Delete the experiment from storage
 
-                            DebugLog($"[AutomaticLabHousekeeper] Transferred {processedData} data from {storagePart.partInfo.title} to lab.");
+                            DebugLog($"[AutomaticLabHousekeeper] Transferred experiment {experiment.subjectID} with {processedData} data from {storagePart.partInfo.title} to lab.");
                         }
                         else
                         {
@@ -539,7 +539,7 @@ namespace ALH
                             // Remove experiment data from storage
                             storageContainer.moduleValues.RemoveNode(experimentNode);
 
-                            DebugLog($"[AutomaticLabHousekeeper] Transferred {processedData} data from {storagePart.partName} to {protoPart.partName}.");
+                            DebugLog($"[AutomaticLabHousekeeper] Transferred experiment {experimentNode.GetValue("subjectID")} with {processedData} data from {storagePart.partName} to {protoPart.partName}.");
                         }
                         else
                         {
@@ -552,15 +552,27 @@ namespace ALH
 
         float CalculateProcessedData(ScienceData experiment, Part part)
         {
-            float dataValue = experiment.dataAmount;
+            // Retrieve the ScienceSubject associated with this experiment
+            ScienceSubject subject = ResearchAndDevelopment.GetSubjectByID(experiment.subjectID);
+
+            if (subject == null)
+            {
+                DebugLog($"[AutomaticLabHousekeeper] WARNING: ScienceSubject for {experiment.subjectID} not found!");
+                return 0f;
+            }
+
+            // Get the correct science value
+            float scienceValue = ResearchAndDevelopment.GetReferenceDataValue(experiment.dataAmount, subject)
+                                 * HighLogic.CurrentGame.Parameters.Career.ScienceGainMultiplier;
+
             float SurfaceBonus = (part.vessel.LandedOrSplashed) ? 0.1f : 0f;
             float homeworldMultiplier = (part.vessel.mainBody.isHomeWorld && part.vessel.LandedOrSplashed) ? 0.1f : 1f;
             bool sameSOI = experiment.subjectID.Contains(part.vessel.mainBody.bodyName);
             float ContextBonus = sameSOI ? 0.25f : 0f;
 
-            DebugLog($"[AutomaticLabHousekeeper] Base: {dataValue}, Bonuses Applied: SurfaceBonus={SurfaceBonus}, ContextBonus={ContextBonus}, HomeworldMultiplier={homeworldMultiplier}");
+            DebugLog($"[AutomaticLabHousekeeper] Science Value: {scienceValue}, Bonuses Applied: SurfaceBonus={SurfaceBonus}, ContextBonus={ContextBonus}, HomeworldMultiplier={homeworldMultiplier}");
 
-            return dataValue * (1 + SurfaceBonus) * (1 + ContextBonus) * homeworldMultiplier;
+            return scienceValue * (1 + SurfaceBonus) * (1 + ContextBonus) * homeworldMultiplier;
         }
 
         float CalculateProcessedDataUnloaded(ConfigNode experimentNode, ProtoVessel protoVessel)
@@ -571,8 +583,24 @@ namespace ALH
                 return 0f;
             }
 
-            // Extract the base data value (DataValue)
-            float dataValue = float.Parse(experimentNode.GetValue("data"));
+            // Extract the experiment subject ID
+            string subjectID = experimentNode.GetValue("subjectID");
+
+            // Get the corresponding science subject
+            ScienceSubject subject = ResearchAndDevelopment.GetSubjectByID(subjectID);
+
+            if (subject == null)
+            {
+                DebugLog($"[AutomaticLabHousekeeper] WARNING: ScienceSubject for {subjectID} not found!");
+                return 0f;
+            }
+
+            // Extract the science data amount
+            float dataAmount = float.Parse(experimentNode.GetValue("data"));
+
+            // Get the actual science value
+            float scienceValue = ResearchAndDevelopment.GetReferenceDataValue(dataAmount, subject)
+                                 * HighLogic.CurrentGame.Parameters.Career.ScienceGainMultiplier;
 
             // Determine if the vessel is landed or splashed down
             bool landed = protoVessel.landed || protoVessel.splashed;
@@ -588,11 +616,11 @@ namespace ALH
             bool sameSOI = experimentNode.GetValue("subjectID").Contains(vesselBody.bodyName);
             float ContextBonus = sameSOI ? 0.25f : 0f;
 
-            DebugLog($"[AutomaticLabHousekeeper] Base Data Value: {dataValue}, Bonuses Applied: " +
+            DebugLog($"[AutomaticLabHousekeeper] Science Value: {scienceValue}, Bonuses Applied: " +
                       $"SurfaceBonus={SurfaceBonus}, ContextBonus={ContextBonus}, HomeworldMultiplier={homeworldMultiplier}");
 
             // Calculate final processed data
-            return dataValue * (1 + SurfaceBonus) * (1 + ContextBonus) * homeworldMultiplier;
+            return scienceValue * (1 + SurfaceBonus) * (1 + ContextBonus) * homeworldMultiplier;
         }
 
         void DebugLog(string message)
