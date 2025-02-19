@@ -1,3 +1,3 @@
 Automatically transfer science from Labs
 
-Current mod version: alpha-1.2.1
+Current mod version: beta-1.0
