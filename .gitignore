@@ -1,7 +1,7 @@
 # Ignore build artifacts
-/bin/
-/obj/
-/Properties/launchSettings.json
+source/AutomaticLabHousekeeper/bin/
+source/AutomaticLabHousekeeper/obj/
+source/AutomaticLabHousekeeper/Properties/launchSettings.json
 
 # Ignore Visual Studio files
 *.user
