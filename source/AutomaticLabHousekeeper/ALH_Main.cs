@@ -16,6 +16,8 @@ namespace ALH
 
         void Awake()
         {
+            lastCheckTime = 0; // Reset lastCheckTime on every scene change or quickload
+            GameEvents.onGameStateLoad.Add(OnGameStateLoad); // Detect quickload
             StartCoroutine(WaitForSettings());
         }
 
@@ -49,14 +51,22 @@ namespace ALH
 
             // Register settings update event
             GameEvents.OnGameSettingsApplied.Add(OnSettingsChanged);
-
             StartCoroutine(DailyScienceCheck());
         }
 
         void OnDestroy()
         {
-            // Unregister the event to prevent memory leaks
+            Debug.Log("[AutomaticLabHousekeeper] Destroying instance, cleaning up...");
+
+            // Remove event listeners to prevent memory leaks
             GameEvents.OnGameSettingsApplied.Remove(OnSettingsChanged);
+            GameEvents.onGameStateLoad.Remove(OnGameStateLoad);
+
+            // Stop all coroutines to ensure they do not continue running
+            StopAllCoroutines();
+
+            // Reset lastCheckTime so that it properly resets on next initialization
+            lastCheckTime = 0;
         }
 
         void OnSettingsChanged()
@@ -73,6 +83,20 @@ namespace ALH
 
             // Restart science processing with new settings
             StopAllCoroutines();
+            StartCoroutine(DailyScienceCheck());
+        }
+
+        void OnGameStateLoad(ConfigNode gameNode)
+        {
+            Debug.Log("[AutomaticLabHousekeeper] Quicksave Loaded, Resetting Mod...");
+
+            // Stop all coroutines to ensure a fresh start
+            StopAllCoroutines();
+
+            // Reset lastCheckTime so the science check starts fresh
+            lastCheckTime = 0;
+
+            // Restart the science processing coroutine
             StartCoroutine(DailyScienceCheck());
         }
 
@@ -320,12 +344,12 @@ namespace ALH
                     double timeElapsed = currentTime - lastUpdateTime;
 
                     // Calculate the scientist effect
-                    float totalScientistLevel = CalculateScientistLevel(protoVessel);
-                    DebugLog($"[AutomaticLabHousekeeper] totalScientistLevel {totalScientistLevel}");
+                    float totalScientistLevel = CalculateScientistLevel(protoVessel, scientistBonus);
+                    DebugLog($"[AutomaticLabHousekeeper] totalScientistValue {totalScientistLevel}");
 
                     // Compute science rate using KSP's actual formula
                     double secondsPerDay = GameSettings.KERBIN_TIME ? 21600.0 : 86400.0;
-                    float scienceRatePerDay = (float)(secondsPerDay * (1 + scientistBonus * totalScientistLevel) * dataStored * dataProcessingMultiplier * scienceMultiplier) / Mathf.Pow(10f, researchTime);
+                    float scienceRatePerDay = (float)(secondsPerDay * totalScientistLevel * dataStored * dataProcessingMultiplier * scienceMultiplier) / Mathf.Pow(10f, researchTime);
                     DebugLog($"[AutomaticLabHousekeeper] scienceRatePerDay {scienceRatePerDay}");
                     float scienceRate = scienceRatePerDay / (float)secondsPerDay;
                     DebugLog($"[AutomaticLabHousekeeper] scienceRate {scienceRate}");
@@ -362,7 +386,7 @@ namespace ALH
         }
 
 
-        float CalculateScientistLevel(ProtoVessel protoVessel)
+        float CalculateScientistLevel(ProtoVessel protoVessel, float scientistBonus)
         {
             float totalScientistLevel = 0;
 
@@ -374,11 +398,11 @@ namespace ALH
                     {
                         foreach (ProtoCrewMember crew in protoPart.protoModuleCrew) // Only count crew inside this part
                         {
-                            DebugLog($"[AutomaticLabHousekeeper] Detected scientist {crew} with stars {crew.experienceLevel}");
-
                             if (crew.experienceTrait.Title == "Scientist")
                             {
-                                totalScientistLevel += crew.experienceLevel;
+                                DebugLog($"[AutomaticLabHousekeeper] Detected scientist {crew} with stars {crew.experienceLevel}");
+
+                                totalScientistLevel += (float) (1.0 + (double) scientistBonus * (double) crew.experienceLevel);
                             }
                         }
                     }
