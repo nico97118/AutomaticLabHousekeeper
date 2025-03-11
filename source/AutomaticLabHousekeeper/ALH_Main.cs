@@ -28,6 +28,14 @@ namespace ALH
                 yield return null; // Wait until settings are available
             }
 
+            // Check if we are in Career or Science mode
+            if (HighLogic.CurrentGame.Mode != Game.Modes.CAREER && HighLogic.CurrentGame.Mode != Game.Modes.SCIENCE_SANDBOX)
+            {
+                Debug.Log("[AutomaticLabHousekeeper] Not in Career or Science mode. Mod will not initialize.");
+                Destroy(this);
+                yield break;
+            }
+
             Debug.Log("[AutomaticLabHousekeeper] Settings loaded, proceeding with initialization.");
 
             // Destroy if ALH is disabled in settings
@@ -127,41 +135,72 @@ namespace ALH
         void ProcessScienceForAllVessels()
         {
             DebugLog("[AutomaticLabHousekeeper] Checking science for ALL vessels...");
-            foreach (Vessel v in FlightGlobals.Vessels.Where(v => HasScienceLab(v)))
+
+            foreach (Vessel vessel in FlightGlobals.Vessels)
             {
+                if (!HasScienceLab(vessel)) continue;
+
                 DebugLog("[AutomaticLabHousekeeper] ============================================================");
 
                 // Check if ALH is on this vessel
-                if (!HasALHModule(v))
+                if (!HasALHModule(vessel))
                 {
-                    DebugLog($"[AutomaticLabHousekeeper] Skipping {v.vesselName}, no ALH module found.");
+                    DebugLog($"[AutomaticLabHousekeeper] Skipping {vessel.vesselName}, no ALH module found.");
                     continue;
                 }
 
-                // Retrieve settings
-                bool transmissionEnabled = GetTransmissionAutomationStatus(v);
-                bool dataPullingEnabled = GetDataPullingStatus(v);
+                DebugLog($"[AutomaticLabHousekeeper] Processing vessel: {vessel.vesselName}");
 
-                if (!transmissionEnabled)
+                // Process loaded vessels
+                if (vessel.loaded)
                 {
-                    DebugLog($"[AutomaticLabHousekeeper] Skipping {v.vesselName}, transmission automation is disabled.");
-                    continue;
-                }
+                    foreach (Part part in vessel.Parts)
+                    {
+                        var lab = part.FindModuleImplementing<ModuleScienceLab>();
+                        if (lab == null) continue;
 
-                if (v.loaded)
-                    TransferScienceFromLab(v);
-                else
+                        var alhModule = part.FindModuleImplementing<Module_AutomaticLabHousekeeper>();
+                        if (alhModule == null) continue;
+
+                        bool transmissionEnabled = alhModule.transmissionAutomationEnabled;
+                        bool dataPullingEnabled = alhModule.dataPullingEnabled;
+
+                        if (transmissionEnabled)
+                        {
+                            TransferScienceFromLab(vessel, part, lab);
+                        }
+
+                        if (dataPullingEnabled)
+                        {
+                            PullDataIntoLab(vessel, part, alhModule);
+                        }
+                    }
+                }
+                else // Process unloaded vessels
                 {
-                    SimulateScienceProcessingForUnloadedLab(v);
-                    TransferScienceFromUnloadedLab(v);
-                }
+                    foreach (ProtoPartSnapshot protoPart in vessel.protoVessel.protoPartSnapshots)
+                    {
+                        ProtoPartModuleSnapshot labModule = protoPart.modules.FirstOrDefault(m => m.moduleName == "ModuleScienceLab");
+                        ProtoPartModuleSnapshot alhModule = protoPart.modules.FirstOrDefault(m => m.moduleName == "Module_AutomaticLabHousekeeper");
+                        ProtoPartModuleSnapshot converterModule = protoPart.modules.FirstOrDefault(m => m.moduleName == "ModuleScienceConverter");
 
-                if (dataPullingEnabled)
-                {
-                    PullDataIntoLab(v); // Attempt to pull data after processing science
-                }
+                        if (labModule == null || alhModule == null) continue;
 
-                DebugLog($"[AutomaticLabHousekeeper] Finished {v.vesselName}");
+                        bool transmissionEnabled = bool.Parse(alhModule.moduleValues.GetValue("transmissionAutomationEnabled"));
+                        bool dataPullingEnabled = bool.Parse(alhModule.moduleValues.GetValue("dataPullingEnabled"));
+
+                        if (transmissionEnabled)
+                        {
+                            SimulateScienceProcessingForUnloadedLab(vessel, protoPart, labModule, converterModule);
+                            TransferScienceFromUnloadedLab(vessel, protoPart, labModule);
+                        }
+
+                        if (dataPullingEnabled)
+                        {
+                            PullDataIntoUnloadedLab(vessel, protoPart, alhModule);
+                        }
+                    }
+                }
             }
         }
 
@@ -181,395 +220,283 @@ namespace ALH
                     protoPart.modules.Any(protoModule => protoModule.moduleName == "Module_AutomaticLabHousekeeper"));
         }
 
-        bool GetTransmissionAutomationStatus(Vessel vessel)
+        void TransferScienceFromLab(Vessel vessel, Part part, ModuleScienceLab lab)
         {
-            if (vessel.loaded)
-            {
-                var alhModule = vessel.Parts
-                    .Select(p => p.FindModuleImplementing<Module_AutomaticLabHousekeeper>())
-                    .FirstOrDefault(m => m != null);
+            Debug.Log($"[AutomaticLabHousekeeper] Processing science transfer for lab {part.partName} in LOADED vessel {vessel.vesselName}");
 
-                return alhModule != null && alhModule.transmissionAutomationEnabled;
+            if (lab.storedScience >= 1)
+            {
+                float wholeScience = Mathf.Floor(lab.storedScience);
+                float remainingScience = lab.storedScience - wholeScience;
+
+                Debug.Log($"[AutomaticLabHousekeeper] Transferring {wholeScience} science from {vessel.vesselName} to R&D, keeping {remainingScience} science in the lab");
+
+                ResearchAndDevelopment.Instance.AddScience(wholeScience, TransactionReasons.ScienceTransmission);
+                lab.storedScience = remainingScience;
+
+                ScreenMessages.PostScreenMessage(Localizer.Format("#autoLOC_ALH_0003", wholeScience, vessel.vesselName), 10f, ScreenMessageStyle.UPPER_CENTER);
             }
             else
             {
-                foreach (ProtoPartSnapshot protoPart in vessel.protoVessel.protoPartSnapshots)
-                {
-                    foreach (ProtoPartModuleSnapshot protoModule in protoPart.modules)
-                    {
-                        if (protoModule.moduleName == "Module_AutomaticLabHousekeeper")
-                        {
-                            return bool.Parse(protoModule.moduleValues.GetValue("transmissionAutomationEnabled"));
-                        }
-                    }
-                }
+                DebugLog("[AutomaticLabHousekeeper] Not enough storedScience");
             }
-            return false; // Default to disabled if module is missing
         }
 
-        bool GetDataPullingStatus(Vessel vessel)
+        void TransferScienceFromUnloadedLab(Vessel vessel, ProtoPartSnapshot protoPart, ProtoPartModuleSnapshot labModule)
         {
-            if (vessel.loaded)
-            {
-                var alhModule = vessel.Parts
-                    .Select(p => p.FindModuleImplementing<Module_AutomaticLabHousekeeper>())
-                    .FirstOrDefault(m => m != null);
+            Debug.Log($"[AutomaticLabHousekeeper] Processing science transfer for lab {protoPart.partName} in UNLOADED vessel {vessel.vesselName}");
 
-                return alhModule != null && alhModule.dataPullingEnabled;
+            float storedScience = float.Parse(labModule.moduleValues.GetValue("storedScience"));
+
+            if (storedScience >= 1)
+            {
+                float wholeScience = Mathf.Floor(storedScience);
+                float remainingScience = storedScience - wholeScience;
+
+                Debug.Log($"[AutomaticLabHousekeeper] Transferring {wholeScience} science from {vessel.vesselName} to R&D, keeping {remainingScience} science in the lab");
+
+                ResearchAndDevelopment.Instance.AddScience(wholeScience, TransactionReasons.ScienceTransmission);
+                labModule.moduleValues.SetValue("storedScience", remainingScience.ToString("F2"));
+
+                ScreenMessages.PostScreenMessage(Localizer.Format("#autoLOC_ALH_0003", wholeScience, vessel.vesselName), 10f, ScreenMessageStyle.UPPER_CENTER);
             }
             else
             {
-                foreach (ProtoPartSnapshot protoPart in vessel.protoVessel.protoPartSnapshots)
-                {
-                    foreach (ProtoPartModuleSnapshot protoModule in protoPart.modules)
-                    {
-                        if (protoModule.moduleName == "Module_AutomaticLabHousekeeper")
-                        {
-                            return bool.Parse(protoModule.moduleValues.GetValue("dataPullingEnabled"));
-                        }
-                    }
-                }
-            }
-            return false; // Default to disabled if module is missing
-        }
-
-        void TransferScienceFromLab(Vessel vessel)
-        {
-            Debug.Log($"[AutomaticLabHousekeeper] Processing LOADED vessel: {vessel.vesselName}");
-
-            foreach (Part p in vessel.Parts)
-            {
-                var lab = p.FindModuleImplementing<ModuleScienceLab>();
-                if (lab != null && lab.storedScience >= 1)
-                {
-                    float wholeScience = Mathf.Floor(lab.storedScience);
-                    float remainingScience = lab.storedScience - wholeScience;
-
-                    Debug.Log($"[AutomaticLabHousekeeper] Transferring {wholeScience} science from {vessel.vesselName} to R&D, keeping {remainingScience} science in the lab");
-
-                    ResearchAndDevelopment.Instance.AddScience(wholeScience, TransactionReasons.ScienceTransmission);
-                    lab.storedScience = remainingScience;
-
-                    ScreenMessages.PostScreenMessage(Localizer.Format("#autoLOC_ALH_0003", wholeScience, vessel.vesselName), 10f, ScreenMessageStyle.UPPER_CENTER);
-                }
+                DebugLog("[AutomaticLabHousekeeper] Not enough storedScience");
             }
         }
 
-        void TransferScienceFromUnloadedLab(Vessel vessel)
+        void SimulateScienceProcessingForUnloadedLab(Vessel vessel, ProtoPartSnapshot protoPart, ProtoPartModuleSnapshot labModule, ProtoPartModuleSnapshot converterModule)
         {
-            Debug.Log($"[AutomaticLabHousekeeper] Processing UNLOADED vessel: {vessel.vesselName}");
-
-            ProtoVessel protoVessel = vessel.protoVessel;
-            foreach (ProtoPartSnapshot protoPart in protoVessel.protoPartSnapshots)
-            {
-                foreach (ProtoPartModuleSnapshot protoModule in protoPart.modules)
-                {
-                    if (protoModule.moduleName == "ModuleScienceLab")
-                    {
-                        float storedScience = float.Parse(protoModule.moduleValues.GetValue("storedScience"));
-
-                        if (storedScience >= 1)
-                        {
-                            float wholeScience = Mathf.Floor(storedScience);
-                            float remainingScience = storedScience - wholeScience;
-
-                            Debug.Log($"[AutomaticLabHousekeeper] Moving {wholeScience} science from {vessel.vesselName} to R&D, keeping {remainingScience} science in the lab");
-
-                            ResearchAndDevelopment.Instance.AddScience(wholeScience, TransactionReasons.ScienceTransmission);
-                            protoModule.moduleValues.SetValue("storedScience", remainingScience.ToString("F2"));
-
-                            ScreenMessages.PostScreenMessage(Localizer.Format("#autoLOC_ALH_0003", wholeScience, vessel.vesselName), 10f, ScreenMessageStyle.UPPER_CENTER);
-                        }
-                        else
-                        {
-                            DebugLog("[AutomaticLabHousekeeper] Not enough storedScience");
-                        }
-                    }
-                }
-            }
-        }
-
-        void SimulateScienceProcessingForUnloadedLab(Vessel vessel)
-        {
-            ProtoVessel protoVessel = vessel.protoVessel;
-
             Debug.Log($"[AutomaticLabHousekeeper] Simulating Science for Unloaded Lab in Vessel {vessel.vesselName}");
 
-            foreach (ProtoPartSnapshot protoPart in protoVessel.protoPartSnapshots)
+            float dataStored = float.Parse(labModule.moduleValues.GetValue("dataStored"));
+            DebugLog($"[AutomaticLabHousekeeper] dataStored {dataStored}");
+            float storedScience = float.Parse(labModule.moduleValues.GetValue("storedScience"));
+            DebugLog($"[AutomaticLabHousekeeper] storedScience {storedScience}");
+            bool isActivated = bool.Parse(converterModule.moduleValues.GetValue("IsActivated"));
+            DebugLog($"[AutomaticLabHousekeeper] isActivated {isActivated}");
+
+            if (!isActivated || dataStored <= 0) return;
+
+            ConfigNode partConfig = PartLoader.getPartInfoByName(protoPart.partName).partConfig;
+            ConfigNode moduleNode = partConfig.GetNodes("MODULE").FirstOrDefault(n => n.GetValue("name") == "ModuleScienceConverter");
+
+            float scienceCap = float.Parse(moduleNode.GetValue("scienceCap"));
+            DebugLog($"[AutomaticLabHousekeeper] scienceCap {scienceCap}");
+
+            float dataProcessingMultiplier = 0.5f; // Default value
+            string value = string.Empty; // Initialize an empty string
+            if (moduleNode.TryGetValue("dataProcessingMultiplier", ref value))
             {
-                ProtoPartModuleSnapshot labModule = null;
-                ProtoPartModuleSnapshot converterModule = null;
-
-                foreach (ProtoPartModuleSnapshot protoModule in protoPart.modules)
+                if (!float.TryParse(value, out dataProcessingMultiplier))
                 {
-                    if (protoModule.moduleName == "ModuleScienceLab")
-                        labModule = protoModule;
-                    if (protoModule.moduleName == "ModuleScienceConverter")
-                        converterModule = protoModule;
-                }
-
-                if (labModule != null && converterModule != null)
-                {
-                    // Ensure values exist
-                    float dataStored = float.Parse(labModule.moduleValues.GetValue("dataStored"));
-                    DebugLog($"[AutomaticLabHousekeeper] dataStored {dataStored}");
-                    float storedScience = float.Parse(labModule.moduleValues.GetValue("storedScience"));
-                    DebugLog($"[AutomaticLabHousekeeper] storedScience {storedScience}");
-                    bool isActivated = bool.Parse(converterModule.moduleValues.GetValue("IsActivated"));
-                    DebugLog($"[AutomaticLabHousekeeper] isActivated {isActivated}");
-
-                    if (!isActivated || dataStored <= 0) return; // Lab is off or no data to process
-
-                    // Read part config values
-                    ConfigNode partConfig = PartLoader.getPartInfoByName(protoPart.partName).partConfig;
-
-                    // Get the ModuleScienceConverter node inside partConfig
-                    ConfigNode moduleNode = partConfig.GetNodes("MODULE").FirstOrDefault(n => n.GetValue("name") == "ModuleScienceConverter");
-
-                    float scienceCap = float.Parse(moduleNode.GetValue("scienceCap"));
-                    DebugLog($"[AutomaticLabHousekeeper] scienceCap {scienceCap}");
-                    float dataProcessingMultiplier = float.Parse(moduleNode.GetValue("dataProcessingMultiplier"));
-                    DebugLog($"[AutomaticLabHousekeeper] dataProcessingMultiplier {dataProcessingMultiplier}");
-                    float scientistBonus = float.Parse(moduleNode.GetValue("scientistBonus"));
-                    DebugLog($"[AutomaticLabHousekeeper] scientistBonus {scientistBonus}");
-                    float researchTime = float.Parse(moduleNode.GetValue("researchTime"));
-                    DebugLog($"[AutomaticLabHousekeeper] researchTime {researchTime}");
-                    float scienceMultiplier = float.Parse(moduleNode.GetValue("scienceMultiplier"));
-                    DebugLog($"[AutomaticLabHousekeeper] scienceMultiplier {scienceMultiplier}");
-
-                    // Get time elapsed
-                    double lastUpdateTime = double.Parse(converterModule.moduleValues.GetValue("lastUpdateTime"));
-                    DebugLog($"[AutomaticLabHousekeeper] lastUpdateTime {lastUpdateTime}");
-                    double currentTime = Planetarium.GetUniversalTime();
-                    double timeElapsed = currentTime - lastUpdateTime;
-
-                    // Calculate the scientist effect
-                    float totalScientistLevel = CalculateScientistLevel(protoVessel, scientistBonus);
-                    DebugLog($"[AutomaticLabHousekeeper] totalScientistValue {totalScientistLevel}");
-
-                    // Compute science rate using KSP's actual formula
-                    double secondsPerDay = GameSettings.KERBIN_TIME ? 21600.0 : 86400.0;
-                    float scienceRatePerDay = (float)(secondsPerDay * totalScientistLevel * dataStored * dataProcessingMultiplier * scienceMultiplier) / Mathf.Pow(10f, researchTime);
-                    DebugLog($"[AutomaticLabHousekeeper] scienceRatePerDay {scienceRatePerDay}");
-                    float scienceRate = scienceRatePerDay / (float)secondsPerDay;
-                    DebugLog($"[AutomaticLabHousekeeper] scienceRate {scienceRate}");
-
-                    // Compute total science generated over elapsed time
-                    float scienceGenerated = scienceRate * (float)timeElapsed;
-
-                    // Ensure generated science doesn't exceed science cap
-                    if (storedScience + scienceGenerated >= scienceCap)
-                    {
-                        scienceGenerated = scienceCap - storedScience;
-                    }
-                    DebugLog($"[AutomaticLabHousekeeper] scienceGenerated {scienceGenerated}");
-
-                    // Convert dataStored into science at the correct rate
-                    float dataUsed = scienceGenerated / scienceMultiplier;
-                    DebugLog($"[AutomaticLabHousekeeper] dataUsed {dataUsed}");
-
-                    // Ensure science storage does not exceed the cap
-                    float newStoredScience = storedScience + scienceGenerated;
-                    DebugLog($"[AutomaticLabHousekeeper] newStoredScience {newStoredScience}");
-
-                    // Update remaining dataStored
-                    float newDataStored = dataStored - dataUsed;
-
-                    // Update ProtoModule values
-                    labModule.moduleValues.SetValue("storedScience", newStoredScience.ToString("F2"));
-                    labModule.moduleValues.SetValue("dataStored", newDataStored.ToString("F2"));
-                    converterModule.moduleValues.SetValue("lastUpdateTime", currentTime.ToString());
-
-                    Debug.Log($"[AutomaticLabHousekeeper] Simulated {scienceGenerated} science for {vessel.vesselName} (Data remaining: {newDataStored}, Stored Science: {newStoredScience}, Total Scientist Level: {totalScientistLevel})");
+                    DebugLog($"[AutomaticLabHousekeeper] Failed to parse dataProcessingMultiplier, using default {dataProcessingMultiplier}");
                 }
             }
+            else
+            {
+                DebugLog($"[AutomaticLabHousekeeper] dataProcessingMultiplier not found, using default {dataProcessingMultiplier}");
+            }
+            DebugLog($"[AutomaticLabHousekeeper] dataProcessingMultiplier {dataProcessingMultiplier}");
+
+            float scientistBonus = float.Parse(moduleNode.GetValue("scientistBonus"));
+            DebugLog($"[AutomaticLabHousekeeper] scientistBonus {scientistBonus}");
+            float researchTime = float.Parse(moduleNode.GetValue("researchTime"));
+            DebugLog($"[AutomaticLabHousekeeper] researchTime {researchTime}");
+            float scienceMultiplier = float.Parse(moduleNode.GetValue("scienceMultiplier"));
+            DebugLog($"[AutomaticLabHousekeeper] scienceMultiplier {scienceMultiplier}");
+
+            double lastUpdateTime = double.Parse(converterModule.moduleValues.GetValue("lastUpdateTime"));
+            DebugLog($"[AutomaticLabHousekeeper] lastUpdateTime {lastUpdateTime}");
+            double currentTime = Planetarium.GetUniversalTime();
+            double timeElapsed = currentTime - lastUpdateTime;
+
+            float totalScientistLevel = CalculateScientistLevel(protoPart, scientistBonus);
+            DebugLog($"[AutomaticLabHousekeeper] totalScientistValue {totalScientistLevel}");
+            double secondsPerDay = GameSettings.KERBIN_TIME ? 21600.0 : 86400.0;
+            float scienceRatePerDay = (float)(secondsPerDay * totalScientistLevel * dataStored * dataProcessingMultiplier * scienceMultiplier) / Mathf.Pow(10f, researchTime);
+            DebugLog($"[AutomaticLabHousekeeper] scienceRatePerDay {scienceRatePerDay}");
+            float scienceRate = scienceRatePerDay / (float)secondsPerDay;
+            DebugLog($"[AutomaticLabHousekeeper] scienceRate {scienceRate}");
+
+            // Compute total science generated over elapsed time
+            float scienceGenerated = scienceRate * (float)timeElapsed;
+
+            // Ensure generated science doesn't exceed science cap
+            if (storedScience + scienceGenerated >= scienceCap)
+            {
+                scienceGenerated = scienceCap - storedScience;
+            }
+            DebugLog($"[AutomaticLabHousekeeper] scienceGenerated {scienceGenerated}");
+
+            // Convert dataStored into science at the correct rate
+            float dataUsed = scienceGenerated / scienceMultiplier;
+            DebugLog($"[AutomaticLabHousekeeper] dataUsed {dataUsed}");
+
+            // Ensure science storage does not exceed the cap
+            float newStoredScience = storedScience + scienceGenerated;
+            DebugLog($"[AutomaticLabHousekeeper] newStoredScience {newStoredScience}");
+
+            // Update remaining dataStored
+            float newDataStored = dataStored - dataUsed;
+
+            // Update ProtoModule values
+            labModule.moduleValues.SetValue("storedScience", newStoredScience.ToString("F2"));
+            labModule.moduleValues.SetValue("dataStored", newDataStored.ToString("F2"));
+            converterModule.moduleValues.SetValue("lastUpdateTime", currentTime.ToString());
+
+            Debug.Log($"[AutomaticLabHousekeeper] Simulated {scienceGenerated} science for {vessel.vesselName} (Data remaining: {newDataStored}, Stored Science: {newStoredScience}, Total Scientist Level: {totalScientistLevel})");
         }
 
-
-        float CalculateScientistLevel(ProtoVessel protoVessel, float scientistBonus)
+        float CalculateScientistLevel(ProtoPartSnapshot protoPart, float scientistBonus)
         {
             float totalScientistLevel = 0;
 
-            foreach (ProtoPartSnapshot protoPart in protoVessel.protoPartSnapshots)
+            foreach (ProtoCrewMember crew in protoPart.protoModuleCrew) // Only count crew inside this part
             {
-                foreach (ProtoPartModuleSnapshot protoModule in protoPart.modules)
+                if (crew.experienceTrait.Title == "Scientist")
                 {
-                    if (protoModule.moduleName == "ModuleScienceLab") // Only count scientists in the lab part
-                    {
-                        foreach (ProtoCrewMember crew in protoPart.protoModuleCrew) // Only count crew inside this part
-                        {
-                            if (crew.experienceTrait.Title == "Scientist")
-                            {
-                                DebugLog($"[AutomaticLabHousekeeper] Detected scientist {crew} with stars {crew.experienceLevel}");
+                    DebugLog($"[AutomaticLabHousekeeper] Detected scientist {crew} with stars {crew.experienceLevel}");
 
-                                totalScientistLevel += (float) (1.0 + (double) scientistBonus * (double) crew.experienceLevel);
-                            }
-                        }
-                    }
+                    totalScientistLevel += (float)(1.0 + (double)scientistBonus * (double)crew.experienceLevel);
                 }
             }
 
             return Mathf.Max(totalScientistLevel, 0.0f); // If no scientists, processing stops
         }
 
-        void PullDataIntoLab(Vessel vessel)
+        void PullDataIntoLab(Vessel vessel, Part part, Module_AutomaticLabHousekeeper alhModule)
         {
-            DebugLog($"[AutomaticLabHousekeeper] Attempting data pull for {vessel.vesselName}...");
+            DebugLog($"[AutomaticLabHousekeeper] Attempting data pull for loaded lab {part.partInfo.name} on-board {vessel.vesselName}...");
 
-            if (vessel.loaded)
+            Part storagePart = part.vessel.Parts.FirstOrDefault(p => p.persistentId.ToString() == alhModule.selectedExperimentStorageUnit);
+            if (storagePart == null)
             {
-                // Process loaded vessel
-                foreach (Part p in vessel.Parts)
-                {
-                    var alhModule = p.FindModuleImplementing<Module_AutomaticLabHousekeeper>();
-                    if (alhModule == null || !alhModule.dataPullingEnabled || alhModule.selectedExperimentStorageUnit == "None")
-                    {
-                        DebugLog($"[AutomaticLabHousekeeper] Data pulling disabled or no storage unit selected for part {p.partName}");
-                        continue; // Skip if data pulling is disabled or no storage unit is selected
-                    }
-                    
-                    // Find the selected storage unit
-                    Part storagePart = vessel.Parts.FirstOrDefault(part => part.persistentId.ToString() == alhModule.selectedExperimentStorageUnit);
-                    if (storagePart == null)
-                    {
-                        DebugLog($"[AutomaticLabHousekeeper] No valid storage unit found for {p.partInfo.title}, skipping.");
-                        continue;
-                    }
-                    
-                    ModuleScienceContainer storageContainer = storagePart.FindModuleImplementing<ModuleScienceContainer>();
-                    ModuleScienceLab lab = p.FindModuleImplementing<ModuleScienceLab>();
-                    
-                    if (storageContainer == null || lab == null)
-                    {
-                        DebugLog($"[AutomaticLabHousekeeper] Missing storage container or lab on {p.partInfo.title}");
-                        continue;
-                    }
-                    
-                    List<ScienceData> storedExperiments = storageContainer.GetData().ToList();
-                    float availableDataSpace = lab.dataStorage - lab.dataStored; // Remaining capacity in lab
-                    
-                    if (storedExperiments.Count == 0 || availableDataSpace <= 0)
-                    {
-                        DebugLog("[AutomaticLabHousekeeper] No experiments available or lab is full.");
-                        continue;
-                    }
-                    
-                    foreach (ScienceData experiment in storedExperiments)
-                    {
-                        float processedData = CalculateProcessedData(experiment, p);
-                        
-                        if (processedData <= availableDataSpace)
-                        {
-                            lab.dataStored += processedData;
-                            availableDataSpace -= processedData;
-                            storageContainer.DumpData(experiment); // Delete the experiment from storage
+                DebugLog($"[AutomaticLabHousekeeper] No valid storage unit found for {part.partInfo.name}, skipping.");
+                return;
+            }
 
-                            DebugLog($"[AutomaticLabHousekeeper] Transferred experiment {experiment.subjectID} with {processedData} data from {storagePart.partInfo.title} to lab.");
-                        }
-                        else
-                        {
-                            DebugLog($"[AutomaticLabHousekeeper] Not enough space in lab {p.partName} to store experiment {experiment.subjectID}. Current stored Data: {lab.dataStored}");
-                        }
-                    }
+            ModuleScienceContainer storageContainer = storagePart.FindModuleImplementing<ModuleScienceContainer>();
+            ModuleScienceLab lab = part.FindModuleImplementing<ModuleScienceLab>();
+
+            if (storageContainer == null || lab == null)
+            {
+                DebugLog($"[AutomaticLabHousekeeper] Missing storage container or lab on {part.partInfo.name}");
+                return;
+            }
+
+            List<ScienceData> storedExperiments = storageContainer.GetData().ToList();
+            float availableDataSpace = lab.dataStorage - lab.dataStored;
+
+            if (storedExperiments.Count == 0 || availableDataSpace <= 0)
+            {
+                DebugLog("[AutomaticLabHousekeeper] No experiments available or lab is full.");
+                return;
+            }
+
+            foreach (ScienceData experiment in storedExperiments)
+            {
+                float processedData = CalculateProcessedData(experiment, part);
+
+                if (processedData <= availableDataSpace)
+                {
+                    lab.dataStored += processedData;
+                    availableDataSpace -= processedData;
+                    storageContainer.DumpData(experiment);
+
+                    DebugLog($"[AutomaticLabHousekeeper] Transferred experiment {experiment.subjectID} with {processedData} data from {storagePart.partInfo.name} to lab.");
+                }
+                else
+                {
+                    DebugLog($"[AutomaticLabHousekeeper] Not enough space in lab {part.partName} to store experiment {experiment.subjectID}. Current stored Data: {lab.dataStored}");
                 }
             }
-            else
+        }
+
+        void PullDataIntoUnloadedLab(Vessel vessel, ProtoPartSnapshot protoPart, ProtoPartModuleSnapshot alhModule)
+        {
+            DebugLog($"[AutomaticLabHousekeeper] Attempting data pull for unloaded lab {protoPart.partInfo.name} on-board {vessel.vesselName}...");
+
+            string selectedStorageUnit = alhModule.moduleValues.GetValue("selectedExperimentStorageUnit");
+            if (selectedStorageUnit == "None")
             {
-                // Process unloaded vessel
-                ProtoVessel protoVessel = vessel.protoVessel;
+                DebugLog("[AutomaticLabHousekeeper] Not able to pull data, Experiment Storage Unit None");
+                return;
+            }
 
-                foreach (ProtoPartSnapshot protoPart in protoVessel.protoPartSnapshots)
+            ProtoPartSnapshot storagePart = vessel.protoVessel.protoPartSnapshots.FirstOrDefault(p => p.persistentId.ToString() == selectedStorageUnit);
+            if (storagePart == null)
+            {
+                DebugLog("[AutomaticLabHousekeeper] Not able to pull data, Storage Part faulty");
+                return;
+            }
+
+            ProtoPartModuleSnapshot storageContainer = storagePart.modules.FirstOrDefault(m => m.moduleName == "ModuleScienceContainer");
+            ProtoPartModuleSnapshot labModule = protoPart.modules.FirstOrDefault(m => m.moduleName == "ModuleScienceLab");
+
+            if (storageContainer == null || labModule == null)
+            {
+                DebugLog("[AutomaticLabHousekeeper] Missing storage container or lab on protoPart");
+                return;
+            }
+
+            // Get stored Experiments
+            ConfigNode[] storedExperiments = storageContainer.moduleValues.GetNodes("ScienceData");
+
+            if (storedExperiments.Length == 0)
+            {
+                DebugLog($"[AutomaticLabHousekeeper] No stored experiments in {storagePart.partName}");
+                return;
+            }
+
+            // Retrieve dataStorage from the part config if not found in the module values
+            ConfigNode partConfig = PartLoader.getPartInfoByName(protoPart.partName).partConfig;
+
+            // Get the ModuleScienceLab node inside partConfig
+            ConfigNode labModuleConfig = partConfig.GetNodes("MODULE").FirstOrDefault(n => n.GetValue("name") == "ModuleScienceLab");
+
+            if (labModuleConfig == null)
+            {
+                Debug.LogError($"[AutomaticLabHousekeeper] ERROR: Could not find ModuleScienceLab config for {protoPart.partName}");
+                return;
+            }
+
+            // Retrieve dataStorage from part config
+            float dataStorage = float.Parse(labModuleConfig.GetValue("dataStorage"));
+            DebugLog($"[AutomaticLabHousekeeper] Found dataStorage = {dataStorage} for {protoPart.partName}");
+
+            // Get the current dataStored from protoModule
+            string dataStoredStr = labModule.moduleValues.GetValue("dataStored");
+            float dataStored = string.IsNullOrEmpty(dataStoredStr) ? 0f : float.Parse(dataStoredStr);
+
+            float availableDataSpace = dataStorage - dataStored;
+
+            if (availableDataSpace <= 0)
+            {
+                DebugLog($"[AutomaticLabHousekeeper] Lab in {protoPart.partName} is full.");
+                return;
+            }
+
+            foreach (ConfigNode experimentNode in storedExperiments)
+            {
+                float processedData = CalculateProcessedDataUnloaded(experimentNode, vessel.protoVessel);
+
+                if (processedData <= availableDataSpace)
                 {
-                    ProtoPartModuleSnapshot alhModule = protoPart.modules.FirstOrDefault(m => m.moduleName == "Module_AutomaticLabHousekeeper");
-                    
-                    if (alhModule == null || alhModule.moduleValues.GetValue("dataPullingEnabled") != "True")
-                    {
-                        DebugLog($"[AutomaticLabHousekeeper] Data pulling disabled or no storage unit selected or no ALH module for part {protoPart.partName}");
-                        continue;
-                    }
-                    
-                    string selectedStorageUnit = alhModule.moduleValues.GetValue("selectedExperimentStorageUnit");
-                    if (selectedStorageUnit == "None")
-                    {
-                        DebugLog("[AutomaticLabHousekeeper] Not able to pull data, Experiment Storage Unit None");
-                        continue;
-                    }
-                    
-                    ProtoPartSnapshot storagePart = protoVessel.protoPartSnapshots.FirstOrDefault(part => part.persistentId.ToString() == selectedStorageUnit);
-                    if (storagePart == null)
-                    {
-                        DebugLog("[AutomaticLabHousekeeper] Not able to pull data, Storage Part faulty");
-                        continue;
-                    }
-                    
-                    ProtoPartModuleSnapshot storageContainer = storagePart.modules.FirstOrDefault(m => m.moduleName == "ModuleScienceContainer");
-                    ProtoPartModuleSnapshot labModule = protoPart.modules.FirstOrDefault(m => m.moduleName == "ModuleScienceLab");
-                    
-                    if (storageContainer == null || labModule == null)
-                    {
-                        DebugLog("[AutomaticLabHousekeeper] Missing storage container or lab on protoPart");
-                        continue;
-                    }
-                    
-                    // Get stored Experiments
-                    ConfigNode[] storedExperiments = storageContainer.moduleValues.GetNodes("ScienceData");
-                    
-                    if (storedExperiments.Length == 0)
-                    {
-                        DebugLog($"[AutomaticLabHousekeeper] No stored experiments in {storagePart.partName}");
-                        continue;
-                    }
-                    
-                    // Retrieve dataStorage from the part config if not found in the module values
-                    ConfigNode partConfig = PartLoader.getPartInfoByName(protoPart.partName).partConfig;
+                    // Add the processed data to the lab
+                    availableDataSpace -= processedData;
+                    float newStoredData = float.Parse(labModule.moduleValues.GetValue("dataStored")) + processedData;
+                    labModule.moduleValues.SetValue("dataStored", newStoredData.ToString("F2"));
 
-                    // Get the ModuleScienceLab node inside partConfig
-                    ConfigNode labModuleConfig = partConfig.GetNodes("MODULE").FirstOrDefault(n => n.GetValue("name") == "ModuleScienceLab");
+                    // Remove experiment data from storage
+                    storageContainer.moduleValues.RemoveNode(experimentNode);
 
-                    if (labModuleConfig == null)
-                    {
-                        Debug.LogError($"[AutomaticLabHousekeeper] ERROR: Could not find ModuleScienceLab config for {protoPart.partName}");
-                        continue;
-                    }
-
-                    // Retrieve dataStorage from part config
-                    float dataStorage = float.Parse(labModuleConfig.GetValue("dataStorage"));
-                    DebugLog($"[AutomaticLabHousekeeper] Found dataStorage = {dataStorage} for {protoPart.partName}");
-
-                    // Get the current dataStored from protoModule
-                    string dataStoredStr = labModule.moduleValues.GetValue("dataStored");
-                    float dataStored = string.IsNullOrEmpty(dataStoredStr) ? 0f : float.Parse(dataStoredStr);
-
-                    float availableDataSpace = dataStorage - dataStored;
-
-                    
-                    if (availableDataSpace <= 0)
-                    {
-                        DebugLog($"[AutomaticLabHousekeeper] Lab in {protoPart.partName} is full.");
-                        continue;
-                    }
-                    
-                    foreach (ConfigNode experimentNode in storedExperiments)
-                    {
-                        float processedData = CalculateProcessedDataUnloaded(experimentNode, protoVessel);
-                        
-                        if (processedData <= availableDataSpace)
-                        {
-                            // Add the processed data to the lab
-                            availableDataSpace -= processedData;
-                            float newStoredData = float.Parse(labModule.moduleValues.GetValue("dataStored")) + processedData;
-                            labModule.moduleValues.SetValue("dataStored", newStoredData.ToString("F2"));
-                            
-                            // Remove experiment data from storage
-                            storageContainer.moduleValues.RemoveNode(experimentNode);
-
-                            DebugLog($"[AutomaticLabHousekeeper] Transferred experiment {experimentNode.GetValue("subjectID")} with {processedData} data from {storagePart.partName} to {protoPart.partName}.");
-                        }
-                        else
-                        {
-                            DebugLog($"[AutomaticLabHousekeeper] Not enough space in lab {protoPart.partName} to store experiment {experimentNode.GetValue("subjectID")}. Current stored Data: {labModule.moduleValues.GetValue("dataStored")}");
-                        }
-                    }
+                    DebugLog($"[AutomaticLabHousekeeper] Transferred experiment {experimentNode.GetValue("subjectID")} with {processedData} data from {storagePart.partName} to {protoPart.partName}.");
+                }
+                else
+                {
+                    DebugLog($"[AutomaticLabHousekeeper] Not enough space in lab {protoPart.partName} to store experiment {experimentNode.GetValue("subjectID")}. Current stored Data: {labModule.moduleValues.GetValue("dataStored")}");
                 }
             }
         }
