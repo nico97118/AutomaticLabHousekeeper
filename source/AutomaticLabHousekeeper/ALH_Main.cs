@@ -36,7 +36,7 @@ namespace ALH
                 yield break;
             }
 
-            Debug.Log("[AutomaticLabHousekeeper] Settings loaded, proceeding with initialization.");
+            Debug.Log($"[AutomaticLabHousekeeper] Settings loaded, proceeding with initialization. Check Interval: {ALHSettings.Instance.checkInterval}, Debug Mode: {ALHSettings.Instance.enableDebug}");
 
             // Destroy if ALH is disabled in settings
             if (!ALHSettings.Instance.enableALH)
@@ -238,7 +238,7 @@ namespace ALH
             }
             else
             {
-                DebugLog("[AutomaticLabHousekeeper] Not enough storedScience");
+                Debug.Log("[AutomaticLabHousekeeper] Not enough storedScience");
             }
         }
 
@@ -262,7 +262,7 @@ namespace ALH
             }
             else
             {
-                DebugLog("[AutomaticLabHousekeeper] Not enough storedScience");
+                Debug.Log("[AutomaticLabHousekeeper] Not enough storedScience");
             }
         }
 
@@ -277,7 +277,16 @@ namespace ALH
             bool isActivated = bool.Parse(converterModule.moduleValues.GetValue("IsActivated"));
             DebugLog($"[AutomaticLabHousekeeper] isActivated {isActivated}");
 
-            if (!isActivated || dataStored <= 0) return;
+            if (!isActivated)
+            {
+                Debug.Log("[AutomaticLabHousekeeper] ConverterModule not activated");
+                return;
+            }
+            if (dataStored <= 0)
+            {
+                Debug.Log("[AutomaticLabHousekeeper] No dataStored on-board");
+                return;
+            }
 
             ConfigNode partConfig = PartLoader.getPartInfoByName(protoPart.partName).partConfig;
             ConfigNode moduleNode = partConfig.GetNodes("MODULE").FirstOrDefault(n => n.GetValue("name") == "ModuleScienceConverter");
@@ -355,11 +364,15 @@ namespace ALH
 
             foreach (ProtoCrewMember crew in protoPart.protoModuleCrew) // Only count crew inside this part
             {
-                if (crew.experienceTrait.Title == "Scientist")
+                if (crew.experienceTrait.Effects.Any(effect => effect.GetType().Name == "ScienceSkill"))
                 {
                     DebugLog($"[AutomaticLabHousekeeper] Detected scientist {crew} with stars {crew.experienceLevel}");
 
                     totalScientistLevel += (float)(1.0 + (double)scientistBonus * (double)crew.experienceLevel);
+                }
+                else
+                {
+                    DebugLog($"[AutomaticLabHousekeeper] Detected crew with trait {crew.experienceTrait.Title}");
                 }
             }
 
