@@ -148,6 +148,11 @@ namespace ALH
                     DebugLog($"[AutomaticLabHousekeeper] Skipping {vessel.vesselName}, no ALH module found.");
                     continue;
                 }
+                if (!HasConnectionToKSC(vessel))
+                {
+                    DebugLog($"[AutomaticLabHousekeeper] Skipping {vessel.vesselName}, no connection to KSC.");
+                    continue;
+                }
 
                 DebugLog($"[AutomaticLabHousekeeper] Processing vessel: {vessel.vesselName}");
 
@@ -218,6 +223,17 @@ namespace ALH
                 ? vessel.Parts.Any(p => p.FindModuleImplementing<Module_AutomaticLabHousekeeper>() != null)
                 : vessel.protoVessel.protoPartSnapshots.Any(protoPart =>
                     protoPart.modules.Any(protoModule => protoModule.moduleName == "Module_AutomaticLabHousekeeper"));
+        }
+
+        bool HasConnectionToKSC(Vessel vessel)
+        {
+            // If CommNet is enabled, require a valid connection object and IsConnected
+            if (HighLogic.CurrentGame.Parameters.Difficulty.EnableCommNet)
+            {
+                return vessel.Connection != null && vessel.Connection.IsConnected;
+            }
+            // If CommNet is not enabled, always return true (no communication restrictions)
+            return true;
         }
 
         void TransferScienceFromLab(Vessel vessel, Part part, ModuleScienceLab lab)
