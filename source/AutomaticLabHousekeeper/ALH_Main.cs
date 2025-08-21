@@ -6,6 +6,7 @@ using UnityEngine;
 using KSP.UI.Screens;
 using System.Collections;
 using KSP.Localization;
+using Strategies;
 
 namespace ALH
 {
@@ -251,6 +252,7 @@ namespace ALH
                 lab.storedScience = remainingScience;
 
                 ScreenMessages.PostScreenMessage(Localizer.Format("#autoLOC_ALH_0003", wholeScience, vessel.vesselName), 10f, ScreenMessageStyle.UPPER_CENTER);
+                ApplyStrategies(wholeScience, vessel);
             }
             else
             {
@@ -275,6 +277,7 @@ namespace ALH
                 labModule.moduleValues.SetValue("storedScience", remainingScience.ToString("F2"));
 
                 ScreenMessages.PostScreenMessage(Localizer.Format("#autoLOC_ALH_0003", wholeScience, vessel.vesselName), 10f, ScreenMessageStyle.UPPER_CENTER);
+                ApplyStrategies(wholeScience, vessel);
             }
             else
             {
@@ -449,7 +452,38 @@ namespace ALH
                 }
             }
             return Mathf.Max(totalLevel, 0.0f);
-    }
+        }
+
+        void ApplyStrategies(float scienceTransferred, Vessel vessel)
+        {
+            if (StrategySystem.Instance == null) return;
+            // Ensure StrategySystem is initialized
+            foreach (var strategy in StrategySystem.Instance.Strategies)
+            {
+                if (!strategy.IsActive) continue;
+
+                foreach (var effect in strategy.Effects)
+                {
+                    // Check if the effect has the method we want to invoke
+                    var method = effect.GetType().GetMethod("OnScienceReceived",
+                        System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public);
+
+                    if (method != null)
+                    {
+                        // Invoke the method with the scienceTransferred
+                        try
+                        {
+                            method.Invoke(effect, new object[] { scienceTransferred, null, vessel.protoVessel, false });
+                            Debug.Log($"[ALH] Strategy {strategy.Title}, effect {effect.GetType().Name} applied to {scienceTransferred} science from {vessel.vesselName}");
+                        }
+                        catch (Exception e)
+                        {
+                            Debug.LogError($"[ALH] Error applying strategy {strategy.Title}, effect {effect.GetType().Name}: {e}");
+                        }
+                    }
+                }
+            }
+        }
 
         void PullDataIntoLab(Vessel vessel, Part part, Module_AutomaticLabHousekeeper alhModule)
         {
