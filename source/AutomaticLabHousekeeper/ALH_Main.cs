@@ -474,11 +474,12 @@ namespace ALH
                         try
                         {
                             method.Invoke(effect, new object[] { scienceTransferred, null, vessel.protoVessel, false });
-                            Debug.Log($"[ALH] Strategy {strategy.Title}, effect {effect.GetType().Name} applied to {scienceTransferred} science from {vessel.vesselName}");
+                            ScreenMessages.PostScreenMessage($"Strategy applied: {strategy.Title}", 10f, ScreenMessageStyle.UPPER_CENTER);
+                            DebugLog($"[AutomaticLabHousekeeper] Strategy {strategy.Title}, effect {effect.GetType().Name} applied to {scienceTransferred} science from {vessel.vesselName}");
                         }
                         catch (Exception e)
                         {
-                            Debug.LogError($"[ALH] Error applying strategy {strategy.Title}, effect {effect.GetType().Name}: {e}");
+                            DebugLog($"[AutomaticLabHousekeeper] Error applying strategy {strategy.Title}, effect {effect.GetType().Name}: {e}");
                         }
                     }
                 }
