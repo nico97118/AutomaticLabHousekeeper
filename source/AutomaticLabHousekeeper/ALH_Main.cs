@@ -458,10 +458,11 @@ namespace ALH
         {
             if (StrategySystem.Instance == null) return;
             // Ensure StrategySystem is initialized
+            DebugLog($"[AutomaticLabHousekeeper] ApplyStrategies called for {scienceTransferred} science from {vessel.vesselName}");
             foreach (var strategy in StrategySystem.Instance.Strategies)
             {
                 if (!strategy.IsActive) continue;
-
+                DebugLog($"[AutomaticLabHousekeeper] Evaluating strategy: {strategy.Title}");
                 foreach (var effect in strategy.Effects)
                 {
                     // Check if the effect has the method we want to invoke
